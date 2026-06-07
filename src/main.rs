@@ -3,6 +3,9 @@ mod cleaner;
 mod watcher;
 mod budget;
 mod state;
+mod anomaly;
+mod circuit_breaker;
+mod throttle;
 mod history;
 
 use anyhow::Result;
