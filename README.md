@@ -1,162 +1,151 @@
 # fleet-warden
 
-> Automated disk cleanup daemon for WSL development environments.
+> Automated disk cleanup, budget enforcement, and health monitoring for distributed agent environments.
 
-Prevents disk bloat by scanning and cleaning build artifacts, language caches, old toolchains, stale sessions, and large files.
+## What This Does
 
-Based on real cleanup data: **54 GB recovered** from target dirs (10 GB), old toolchains (9 GB), pip cache (16 GB), HuggingFace weights (5 GB), old Node versions, and session trajectories (1 GB).
+Fleet Warden is a daemon and CLI that prevents disk bloat in development and production fleets. It scans for recoverable waste — Rust `target/` directories, pip and npm caches, stale toolchains, old session files, and HuggingFace model weights — then cleans selectively or on schedule. It tracks cleanup history, monitors disk budgets with growth-rate estimation, and can run as a background watcher that enforces policies automatically. One real-world deployment recovered **54 GB** from a single workstation.
 
-## Install
+## Why It Matters
+
+Agent fleets generate artifacts at machine speed: model checkpoints, build outputs, cached dependencies, log streams. Without automated hygiene, every node becomes a disk-full incident waiting to happen. In the AGI trajectory, self-managing infrastructure is not optional — it is the immune system of the fleet. Fleet Warden is that immune system: it patrols, diagnoses, and heals storage before humans notice the problem.
+
+## Quick Start
 
 ```bash
+# Install
+git clone https://github.com/SuperInstance/fleet-warden-rs
+cd fleet-warden-rs
 cargo install --path .
-```
 
-## Usage
-
-### Check — Dry Run Scan
-
-```bash
-# Scan and report what can be cleaned
+# Dry run — see what can be recovered
 fleet-warden check
-```
-
-Output:
-
-```
-🔍 Fleet Warden — Disk Scan Report
-
-──────────────────────────────────────────────────────────
-  Category                               Size      Items
-──────────────────────────────────────────────────────────
-  Target directories (*/target/)        10.2 GB       47
-  Pip cache                             16.0 GB    1243
-  npm cache                              2.1 GB      89
-  Old Rust toolchains                    9.4 GB        3
-  Stale sessions (>30 days)              1.1 GB      56
-  HuggingFace weights                    5.3 GB       12
-  Large files (>100MB)                   4.7 GB        3
-──────────────────────────────────────────────────────────
-  TOTAL CLEANABLE                       48.8 GB
-```
-
-JSON report is printed to stderr for scripting:
-
-```bash
-fleet-warden check 2>report.json
-```
-
-### Clean — Execute Cleanup
-
-```bash
-# Clean target dirs only (default)
-fleet-warden clean --target-dirs
-
-# Clean specific categories
-fleet-warden clean --pip-cache --npm-cache
-
-# Clean stale sessions older than 14 days
-fleet-warden clean --stale-sessions 14
 
 # Clean everything
 fleet-warden clean --all
+
+# Watch mode — patrol every hour
+fleet-warden watch --interval 3600
+
+# Check disk budget
+eet-warden budget
 ```
 
-Each category shows before/after sizes:
+### Programmatic Usage
 
-```
-🧹 Fleet Warden — Cleaning Up
+```rust
+use fleet_warden::scanner::{full_scan, ScanReport};
+use fleet_warden::cleaner;
+use anyhow::Result;
 
-  ✓ Target dirs: recovered 10.2 GB
-  ✓ Pip cache: recovered 16.0 GB
-  ✓ npm cache: recovered 2.1 GB
+fn main() -> Result<()> {
+    let report: ScanReport = full_scan()?;
+    println!("Total cleanable: {} bytes", report.total_cleanable());
 
-✨ Total recovered: 28.3 GB
-```
-
-### Watch — Daemon Mode
-
-```bash
-# Run with default 1-hour interval
-fleet-warden watch
-
-# Custom interval (5 minutes)
-fleet-warden watch --interval 300
+    if report.target_dirs_size > 1_000_000_000 {
+        cleaner::clean_target_dirs()?;
+    }
+    Ok(())
+}
 ```
 
-The watcher:
-- Checks disk usage every N seconds
-- Auto-cleans target dirs when `~/repos` disk usage exceeds 80%
-- If still over 80%, also cleans pip and npm caches
-- Logs all activity to `~/.fleet-warden/log.jsonl`
+## Architecture
 
-### Budget — Disk Analysis
+| Module | Purpose |
+|--------|---------|
+| `scanner` | Recursive filesystem scans for targets, caches, toolchains, sessions, and large files |
+| `cleaner` | Safe removal with before/after size verification for each category |
+| `watcher` | Daemon loop that periodically scans and cleans based on policy thresholds |
+| `budget` | Disk usage tracking, growth-rate estimation, and days-until-full prediction |
+| `state` | Persistent cleanup ledger with JSON-backed history |
+| `history` | Load and query past cleanup events |
 
-```bash
-fleet-warden budget
+## API Tour
+
+### `ScanReport`
+
+The output of a full fleet scan, serializable to JSON.
+
+```rust
+#[derive(Debug, Serialize, Clone)]
+pub struct ScanReport {
+    pub target_dirs_count: usize,
+    pub target_dirs_size: u64,
+    pub pip_cache_size: u64,
+    pub npm_cache_size: u64,
+    pub old_toolchains_count: usize,
+    pub stale_sessions_count: usize,
+    pub huggingface_size: u64,
+    pub large_files_count: usize,
+}
+
+impl ScanReport {
+    pub fn total_cleanable(&self) -> u64;
+}
 ```
 
-```
-📊 Fleet Warden — Disk Budget
+### Scanner functions
 
-  Mount:      /dev/sdb
-  Total:      250.0 GB
-  Used:       187.5 GB (75.0%)
-  Free:       62.5 GB
+Each returns a `(count, size)` tuple or populates a `ScanReport`.
 
-  Growth rate: 500 MB/day (estimated)
-  Days until full: 125
-
-  Total recovered (all time): 54.2 GB
+```rust
+pub fn full_scan() -> Result<ScanReport>
+pub fn dir_size(path: &Path) -> (u64, usize)
+pub fn target_dirs_size() -> Result<u64>
+pub fn pip_cache_size() -> Result<u64>
+pub fn stale_sessions_size(days: u64) -> Result<u64>
 ```
 
-### History — Cleanup Log
+### Cleaner functions
 
-```bash
-fleet-warden history
-fleet-warden history --limit 10
+Safe, idempotent cleanup with rayon-parallelized target removal.
+
+```rust
+pub fn clean_target_dirs() -> Result<()>
+pub fn clean_pip_cache() -> Result<()>
+pub fn clean_npm_cache() -> Result<()>
+pub fn clean_stale_sessions(days: u64) -> Result<()>
+pub fn clean_old_toolchains() -> Result<()>
+pub fn clean_huggingface() -> Result<()>
 ```
 
-```
-📜 Fleet Warden — Cleanup History
+### CLI Commands
 
-  Date                   Category              Recovered
-──────────────────────────────────────────────────────────
-  2025-06-06T13:00:00Z   target_dirs               10.2 GB
-  2025-06-05T09:30:00Z   pip_cache                  16.0 GB
-  2025-06-04T14:00:00Z   huggingface                 5.3 GB
-──────────────────────────────────────────────────────────
-  Showing 3 of 3 entries
-```
+| Command | Purpose |
+|---------|---------|
+| `check` | Dry-run scan with formatted table + JSON stderr |
+| `clean` | Selective or `--all` cleanup with per-category recovery reports |
+| `watch` | Background daemon with configurable interval |
+| `budget` | Disk usage, growth rate, and days-until-full estimate |
+| `history` | Recent cleanup events with date, category, and bytes recovered |
 
-## What It Cleans
+## Performance
 
-| Category | Path | Typical Size |
-|---|---|---|
-| Target directories | `~/repos/*/target/` | 5-15 GB |
-| Pip cache | `~/.cache/pip/` | 5-20 GB |
-| npm cache | `~/.npm/_cacache/` | 1-5 GB |
-| Old Rust toolchains | `~/.rustup/toolchains/` | 5-10 GB |
-| Stale sessions | `~/.openclaw/agents/main/sessions/` | 0.5-2 GB |
-| HuggingFace weights | `~/.cache/huggingface/` | 2-10 GB |
-| Large files | `~/repos/**` (>100MB) | varies |
+| Operation | Complexity | Notes |
+|-----------|-----------|-------|
+| Full scan | O(filesystem nodes) | Parallelized with `rayon` for target directories |
+| Target cleanup | O(target dirs) | Parallel `remove_dir_all` |
+| Cache cleanup | O(1) | Shells out to `pip`, `npm`, or removes cache directories |
+| Budget query | O(history entries) | Reads JSON ledger from disk |
+| Watch loop | O(interval) | Sleeps between scans, configurable granularity |
 
-## State & Logging
+The scanner uses `symlink_metadata` to avoid following symlinks into dangerous territory. All cleaners verify recovery with before/after size deltas.
 
-- **State file:** `~/.fleet-warden/state.json` — last cleanup dates, total recovered, budget samples
-- **Log file:** `~/.fleet-warden/log.jsonl` — append-only audit trail of all cleanups and watch events
+## Ecosystem
 
-## Dependencies
+- **[t-minus](https://github.com/SuperInstance/t-minus-rs)** — Schedule `fleet-warden check` on cron intervals
+- **[conservation-law](https://github.com/SuperInstance/conservation-law-rs)** — Model disk growth as a dynamical system and predict inflection points
+- **[spectral-fleet](https://github.com/SuperInstance/spectral-fleet-rs)** — Cluster fleet nodes by cleanup patterns to identify outlier resource hogs
+- **[categorical-agents](https://github.com/SuperInstance/categorical-agents-rs)** — Compose cleanup policies as monadic state transformations
 
-- [clap](https://crates.io/crates/clap) — CLI argument parsing
-- [serde](https://crates.io/crates/serde) + [serde_json](https://crates.io/crates/serde_json) — JSON serialization
-- [anyhow](https://crates.io/crates/anyhow) — Error handling
-- [rayon](https://crates.io/crates/rayon) — Parallel directory scanning
-- [chrono](https://crates.io/crates/chrono) — Timestamp handling
-- [humansize](https://crates.io/crates/humansize) — Human-readable file sizes
-- [console](https://crates.io/crates/console) — Terminal styling
-- [indicatif](https://crates.io/crates/indicatif) — Progress bars
+## Ideas for Improvement
+
+1. **Policy engine** — YAML/JSON rule files defining per-category thresholds and auto-clean triggers.
+2. **Fleet-wide aggregation** — Collect scan reports from all nodes and surface fleet-level dashboards.
+3. **Dry-run diff mode** — Show exactly which files would be deleted before any removal.
+4. **Cloud storage tiering** — Automatically move cold HuggingFace weights to object storage instead of deleting.
+5. **Integration with container runtimes** — Scan and clean Docker volumes, BuildKit caches, and overlayfs leftovers.
 
 ## License
 
-MIT
+MIT OR Apache-2.0
