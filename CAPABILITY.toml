@@ -1,0 +1,126 @@
+[crate]
+name = "fleet-warden-rs"
+version = "0.1.0"
+layer = "monitoring"
+description = "Automated disk cleanup daemon for WSL development environments"
+
+[provides]
+capabilities = [
+  { name = "disk_scanner", type = "module", description = "Full disk scan reporting target dirs, pip/npm caches, stale sessions, HuggingFace weights, large files" },
+  { name = "cleaner", type = "module", description = "Targeted cleanup of disk categories: target dirs, pip, npm, toolchains, sessions, HuggingFace" },
+  { name = "disk_budget", type = "fn", description = "Current disk usage, free space, growth rate estimation, and total recovered" },
+  { name = "daemon_watcher", type = "module", description = "Periodic background daemon that runs scans and cleanups at configured intervals" },
+  { name = "cleanup_history", type = "module", description = "Persistent log of cleanup operations with timestamps, categories, and recovered bytes" },
+  { name = "anomaly_detection", type = "module", description = "Detects abnormal disk usage patterns" },
+  { name = "circuit_breaker", type = "module", description = "Protects against cascading cleanup failures" },
+  { name = "state_management", type = "module", description = "Persistent state tracking for cleanup operations and budgets" }
+]
+exports = [
+  "scanner::full_scan",
+  "scanner::ScanReport",
+  "cleaner::clean_target_dirs",
+  "cleaner::clean_pip_cache",
+  "cleaner::clean_npm_cache",
+  "cleaner::clean_stale_sessions",
+  "cleaner::clean_old_toolchains",
+  "cleaner::clean_huggingface",
+  "budget::disk_budget",
+  "budget::DiskBudget",
+  "watcher::run",
+  "history::load_entries",
+  "history::HistoryEntry",
+  "anomaly::detect",
+  "circuit_breaker::CircuitBreaker",
+  "throttle::ThrottleConfig",
+  "state::State"
+]
+
+[requires]
+optional = [
+  { crate = "conservation-law-rs", reason = "Conservation audits triggered by anomaly detection", import = "fleet_integration::FleetConservation" },
+  { crate = "t-minus-rs", reason = "Scheduled cleanup with deadline-constrained operations", import = "schedule::CronExpr" },
+  { crate = "entropy-conservation-rs", reason = "Entropy-aware cleanup ordering", import = "entropy::EntropyBudget" }
+]
+
+[integrates.conservation_law]
+crate = "conservation-law-rs"
+module = "anomaly"
+description = "Conservation audits: anomaly detection in disk usage triggers conservation law verification"
+human_steps = [
+  "1. cargo add conservation-law",
+  "2. Wire anomaly detection output into FleetConservation audit",
+  "3. Conservation violations trigger deeper system health checks"
+]
+agent_steps = [
+  "Monitor anomaly detection output from fleet-warden",
+  "When anomalies detected, feed metrics into FleetConservation.audit_fleet()",
+  "Use ConservationReport to decide if cleanup should be escalated or halted"
+]
+
+[integrates.t_minus]
+crate = "t-minus-rs"
+module = "watcher"
+description = "Scheduled daemon: use cron expressions for periodic cleanup, deadline-constrained scan operations"
+human_steps = [
+  "1. cargo add t-minus-rs",
+  "2. Configure CronExpr for cleanup intervals",
+  "3. Set deadline durations for scan/clean operations"
+]
+agent_steps = [
+  "Create CronExpr for recurring fleet-warden checks",
+  "Set DeadlineNode for scan operation timeout",
+  "Apply backpressure to rate-limit concurrent cleanups"
+]
+
+[integrates.entropy_conservation]
+crate = "entropy-conservation-rs"
+module = "cleaner"
+description = "Entropy-aware cleanup: order cleanup operations to minimize system entropy increase"
+human_steps = [
+  "1. cargo add entropy-conservation",
+  "2. Query entropy budget before cleanup operations",
+  "3. Order cleanup by entropy impact"
+]
+agent_steps = [
+  "Query entropy budget for each cleanup category",
+  "Prioritize cleanup operations that minimize entropy increase",
+  "Track entropy delta across cleanup history"
+]
+
+[onboarding.human]
+quick_start = "cargo add fleet-warden && fleet-warden check"
+example = """
+# Scan for cleanable disk usage
+fleet-warden check
+
+# Clean specific categories
+fleet-warden clean --target-dirs --pip-cache --npm-cache
+
+# Clean everything
+fleet-warden clean --all
+
+# Run as daemon (check every hour)
+fleet-warden watch --interval 3600
+
+# View disk budget
+fleet-warden budget
+
+# View cleanup history
+fleet-warden history --limit 20
+"""
+
+[onboarding.agent]
+context_needed = ["mount_point", "cleanup_categories", "disk_threshold_pct", "daemon_interval"]
+api_surface = [
+  "scanner::full_scan() -> Result<ScanReport>",
+  "budget::disk_budget() -> Result<DiskBudget>",
+  "cleaner::clean_target_dirs() -> Result<()>",
+  "cleaner::clean_pip_cache() -> Result<()>",
+  "cleaner::clean_npm_cache() -> Result<()>",
+  "cleaner::clean_stale_sessions(days) -> Result<()>",
+  "cleaner::clean_old_toolchains() -> Result<()>",
+  "cleaner::clean_huggingface() -> Result<()>",
+  "watcher::run(interval) -> Result<()>",
+  "history::load_entries() -> Result<Vec<HistoryEntry>>"
+]
+integration_pattern = "Run scanner::full_scan() to assess disk state, check budget::disk_budget() for growth trends, execute targeted cleaner functions, track results in history. For daemon mode: configure watcher interval and threshold triggers."
